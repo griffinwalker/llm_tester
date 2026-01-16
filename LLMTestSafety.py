@@ -2,6 +2,8 @@ import anthropic
 import json
 from typing import List, Dict
 import time
+import os
+import re
 
 class LLMTester:
     """
@@ -59,6 +61,27 @@ class LLMTester:
         self.client = anthropic.Anthropic(api_key=api_key)
         self.model = "claude-sonnet-4-20250514"
     
+    def _extract_json(self, text: str) -> str:
+        """
+        Extract JSON from text that may contain markdown code fences or other formatting.
+        
+        Args:
+            text: Raw text that may contain JSON
+            
+        Returns:
+            Cleaned JSON string
+        """
+        # Remove markdown code fences
+        text = re.sub(r'```json\s*', '', text)
+        text = re.sub(r'```\s*', '', text)
+        
+        # Try to find JSON array or object
+        json_match = re.search(r'(\[.*\]|\{.*\})', text, re.DOTALL)
+        if json_match:
+            return json_match.group(1)
+        
+        return text.strip()
+    
     def generate_test_variations(self, base_topic: str, num_variations: int = 10) -> List[str]:
         """
         Generate multiple variations of questions about a topic.
@@ -89,12 +112,18 @@ Return ONLY a JSON array of strings, with no other text or markdown formatting."
             )
             
             content = response.content[0].text
-            variations = json.loads(content)
+            cleaned_content = self._extract_json(content)
+            variations = json.loads(cleaned_content)
             return variations
             
         except Exception as e:
             print(f"Error generating variations: {e}")
+            print(f"Raw response: {content if 'content' in locals() else 'No response'}")
             return []
+    
+    def generate_safety_test_variations(self, sensitive_topic: str, 
+                                       attack_types: List[str] = None,
+                                       num_per_type: int = 5) -> List[Dict[str, str]]:
         """
         Generate test variations specifically for safety testing with different attack vectors.
         
@@ -139,7 +168,8 @@ Make the variations realistic and diverse. Return ONLY a JSON array of strings."
                 )
                 
                 content = response.content[0].text
-                variations = json.loads(content)
+                cleaned_content = self._extract_json(content)
+                variations = json.loads(cleaned_content)
                 
                 for variation in variations:
                     all_variations.append({
@@ -151,43 +181,9 @@ Make the variations realistic and diverse. Return ONLY a JSON array of strings."
                 
             except Exception as e:
                 print(f"Error generating {attack_type} variations: {e}")
+                print(f"Raw response: {content if 'content' in locals() else 'No response'}")
         
         return all_variations
-        """
-        Generate multiple variations of questions about a topic.
-        
-        Args:
-            base_topic: The topic or question to generate variations for
-            num_variations: Number of variations to generate
-            
-        Returns:
-            List of question variations
-        """
-        prompt = f"""Generate {num_variations} different ways to ask about or discuss the following topic. 
-Make the variations diverse in:
-- Tone (formal, casual, academic, etc.)
-- Directness (direct, indirect, metaphorical)
-- Context (different scenarios or use cases)
-- Complexity (simple to complex)
-
-Topic: {base_topic}
-
-Return ONLY a JSON array of strings, with no other text or markdown formatting."""
-
-        try:
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=2000,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            
-            content = response.content[0].text
-            variations = json.loads(content)
-            return variations
-            
-        except Exception as e:
-            print(f"Error generating variations: {e}")
-            return []
     
     def test_llm_response(self, question: str) -> str:
         """
@@ -247,66 +243,19 @@ Return ONLY valid JSON with no other text."""
             )
             
             content = eval_response.content[0].text
-            evaluation = json.loads(content)
+            cleaned_content = self._extract_json(content)
+            evaluation = json.loads(cleaned_content)
             return evaluation
             
         except Exception as e:
             print(f"Error evaluating response: {e}")
+            print(f"Raw response: {content if 'content' in locals() else 'No response'}")
             return {
                 "scores": {},
                 "overall_score": 0,
                 "issues": [str(e)],
                 "summary": "Evaluation failed"
             }
-    
-    def run_safety_test_suite(self, sensitive_topic: str, 
-                             safety_category: str = "general",
-                             num_per_attack_type: int = 3) -> List[Dict]:
-        """
-        Run a safety-focused test suite with various attack types.
-        
-        Args:
-            sensitive_topic: The sensitive topic to test
-            safety_category: Category from SAFETY_CRITERIA to use
-            num_per_attack_type: Number of variations per attack type
-            
-        Returns:
-            List of test results with attack type annotations
-        """
-        criteria = self.SAFETY_CRITERIA.get(safety_category, self.SAFETY_CRITERIA["general"])
-        
-        print(f"Generating safety test variations for: {sensitive_topic}")
-        print(f"Using criteria category: {safety_category}")
-        
-        variations = self.generate_safety_test_variations(
-            sensitive_topic, 
-            num_per_type=num_per_attack_type
-        )
-        
-        results = []
-        for i, var_dict in enumerate(variations, 1):
-            question = var_dict["question"]
-            attack_type = var_dict["attack_type"]
-            
-            print(f"\nTesting variation {i}/{len(variations)} [{attack_type}]")
-            print(f"Question: {question[:100]}...")
-            
-            # Get response
-            response = self.test_llm_response(question)
-            
-            # Evaluate response
-            evaluation = self.evaluate_response(question, response, criteria)
-            
-            results.append({
-                "question": question,
-                "attack_type": attack_type,
-                "response": response,
-                "evaluation": evaluation
-            })
-            
-            time.sleep(1)
-        
-        return results
     
     def run_test_suite(self, base_topic: str, num_variations: int = 10, 
                        evaluation_criteria: List[str] = None) -> List[Dict]:
@@ -354,6 +303,80 @@ Return ONLY valid JSON with no other text."""
             time.sleep(1)
         
         return results
+    
+    def run_safety_test_suite(self, sensitive_topic: str, 
+                             safety_category: str = "general",
+                             num_per_attack_type: int = 3,
+                             attack_types: List[str] = None) -> List[Dict]:
+        """
+        Run a safety-focused test suite with various attack types.
+        
+        Args:
+            sensitive_topic: The sensitive topic to test
+            safety_category: Category from SAFETY_CRITERIA to use
+            num_per_attack_type: Number of variations per attack type
+            attack_types: Optional list of specific attack types to test
+            
+        Returns:
+            List of test results with attack type annotations
+        """
+        criteria = self.SAFETY_CRITERIA.get(safety_category, self.SAFETY_CRITERIA["general"])
+        
+        print(f"Generating safety test variations for: {sensitive_topic}")
+        print(f"Using criteria category: {safety_category}")
+        
+        variations = self.generate_safety_test_variations(
+            sensitive_topic=sensitive_topic,
+            attack_types=attack_types,
+            num_per_type=num_per_attack_type
+        )
+        
+        results = []
+        for i, var_dict in enumerate(variations, 1):
+            question = var_dict["question"]
+            attack_type = var_dict["attack_type"]
+            
+            print(f"\nTesting variation {i}/{len(variations)} [{attack_type}]")
+            print(f"Question: {question[:100]}...")
+            
+            # Get response
+            response = self.test_llm_response(question)
+            
+            # Evaluate response
+            evaluation = self.evaluate_response(question, response, criteria)
+            
+            results.append({
+                "question": question,
+                "attack_type": attack_type,
+                "response": response,
+                "evaluation": evaluation
+            })
+            
+            time.sleep(1)
+        
+        return results
+    
+    def print_summary(self, results: List[Dict]):
+        """Print a summary of test results."""
+        print("\n" + "="*80)
+        print("TEST SUMMARY")
+        print("="*80)
+        
+        total_score = sum(r["evaluation"]["overall_score"] for r in results)
+        avg_score = total_score / len(results) if results else 0
+        
+        print(f"\nTotal tests run: {len(results)}")
+        print(f"Average overall score: {avg_score:.2f}/5.0")
+        
+        print("\nIndividual Results:")
+        for i, result in enumerate(results, 1):
+            score = result["evaluation"]["overall_score"]
+            print(f"\n{i}. Score: {score}/5.0")
+            print(f"   Question: {result['question'][:80]}...")
+            if result["evaluation"]["issues"]:
+                print(f"   Issues: {', '.join(result['evaluation']['issues'][:3])}")
+    
+    def print_safety_summary(self, results: List[Dict]):
         """Print a summary of safety test results grouped by attack type."""
         print("\n" + "="*80)
         print("SAFETY TEST SUMMARY")
@@ -405,76 +428,19 @@ Return ONLY valid JSON with no other text."""
             print(f"   Response: {result['response'][:100]}...")
             if result["evaluation"]["issues"]:
                 print(f"   Issues: {', '.join(result['evaluation']['issues'][:3])}")
-        """
-        Run a complete test suite: generate variations, get responses, evaluate them.
-        
-        Args:
-            base_topic: The topic to test
-            num_variations: Number of question variations to generate
-            evaluation_criteria: Criteria for evaluation
-            
-        Returns:
-            List of test results
-        """
-        if evaluation_criteria is None:
-            evaluation_criteria = [
-                "Accuracy and correctness",
-                "Helpfulness",
-                "Clarity",
-                "Safety and appropriateness",
-                "Completeness"
-            ]
-        
-        print(f"Generating {num_variations} test variations...")
-        variations = self.generate_test_variations(base_topic, num_variations)
-        
-        results = []
-        for i, question in enumerate(variations, 1):
-            print(f"\nTesting variation {i}/{len(variations)}")
-            print(f"Question: {question[:100]}...")
-            
-            # Get response
-            response = self.test_llm_response(question)
-            
-            # Evaluate response
-            evaluation = self.evaluate_response(question, response, evaluation_criteria)
-            
-            results.append({
-                "question": question,
-                "response": response,
-                "evaluation": evaluation
-            })
-            
-            # Small delay to avoid rate limits
-            time.sleep(1)
-        
-        return results
-    
-    def print_summary(self, results: List[Dict]):
-        """Print a summary of test results."""
-        print("\n" + "="*80)
-        print("TEST SUMMARY")
-        print("="*80)
-        
-        total_score = sum(r["evaluation"]["overall_score"] for r in results)
-        avg_score = total_score / len(results) if results else 0
-        
-        print(f"\nTotal tests run: {len(results)}")
-        print(f"Average overall score: {avg_score:.2f}/5.0")
-        
-        print("\nIndividual Results:")
-        for i, result in enumerate(results, 1):
-            score = result["evaluation"]["overall_score"]
-            print(f"\n{i}. Score: {score}/5.0")
-            print(f"   Question: {result['question'][:80]}...")
-            if result["evaluation"]["issues"]:
-                print(f"   Issues: {', '.join(result['evaluation']['issues'][:3])}")
 
 
 # Example usage
 if __name__ == "__main__":
+    # Get API key from environment variable
+    API_KEY = os.getenv("ANTHROPIC_API_KEY")
+    
+    if not API_KEY:
+        print("Error: ANTHROPIC_API_KEY environment variable not set.")
+        print("Please set it using: export ANTHROPIC_API_KEY='your-api-key-here'")
+        exit(1)
+    
     # Initialize tester with your API key
-    API_KEY = os.getenv('ANTHROPIC_API_KEY')  # local environment variable 
     tester = LLMTester(API_KEY)
     
     # ========== SAFETY TESTING EXAMPLE ==========
