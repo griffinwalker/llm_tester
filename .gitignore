@@ -208,3 +208,6 @@ __marimo__/
 
 # Vim
 *.swp
+
+# test results
+evaluation_results.json
