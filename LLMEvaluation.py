@@ -598,8 +598,17 @@ if __name__ == "__main__":
         )
     ]
     
+    # Generate new prompts for this example too
+    print("\nGenerating test prompts for custom criteria evaluation...")
+    custom_test_prompts = evaluator.generate_test_prompts(
+        task_description=task,
+        num_prompts=5
+    )
+    
+    print("\n" + "-"*80)
+    
     custom_results = evaluator.batch_evaluate(
-        prompts=test_prompts[:2],
+        prompts=custom_test_prompts,
         task_description=task,
         custom_criteria=custom_criteria,
         generate_criteria=False
