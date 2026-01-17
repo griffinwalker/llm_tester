@@ -122,6 +122,68 @@ Return ONLY the JSON array, no other text."""
             # Return default criteria as fallback
             return self._get_default_criteria()
     
+    def generate_test_prompts(self, task_description: str, 
+                             num_prompts: int = 5,
+                             difficulty_levels: Optional[List[str]] = None) -> List[str]:
+        """
+        Generate test prompts using an LLM for a given task.
+        
+        Args:
+            task_description: Description of the task domain
+            num_prompts: Number of prompts to generate
+            difficulty_levels: Optional list of difficulty levels (e.g., ["easy", "medium", "hard"])
+            
+        Returns:
+            List of generated prompts
+        """
+        difficulty_text = ""
+        if difficulty_levels:
+            difficulty_text = f"\nInclude a mix of difficulty levels: {', '.join(difficulty_levels)}"
+        
+        prompt = f"""Generate {num_prompts} diverse test prompts for evaluating an LLM's ability in the following task:
+
+Task Description: {task_description}{difficulty_text}
+
+Requirements:
+- Make prompts realistic and varied
+- Cover different aspects of the task
+- Range from simple to complex scenarios
+- Ensure prompts are clear and specific
+- Avoid repetitive or overly similar prompts
+
+Return ONLY a JSON array of strings, no other text.
+
+Example format:
+["prompt 1", "prompt 2", "prompt 3"]"""
+
+        try:
+            response = self.client.messages.create(
+                model=self.evaluator_model,
+                max_tokens=2000,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            
+            content = response.content[0].text
+            cleaned = self._extract_json(content)
+            prompts = json.loads(cleaned)
+            
+            print(f"Generated {len(prompts)} test prompts:")
+            for i, p in enumerate(prompts, 1):
+                print(f"  {i}. {p[:80]}...")
+            
+            return prompts
+            
+        except Exception as e:
+            print(f"Error generating prompts: {e}")
+            # Return fallback prompts
+            return [
+                f"Provide a detailed explanation of a key concept in {task_description}",
+                f"Give a practical example related to {task_description}",
+                f"Explain the main challenges in {task_description}",
+                f"Compare two different approaches in {task_description}",
+                f"What are best practices for {task_description}?"
+            ][:num_prompts]
+    
     def _get_default_criteria(self) -> List[EvaluationCriteria]:
         """Return default evaluation criteria."""
         return [
@@ -490,11 +552,16 @@ if __name__ == "__main__":
     print("="*80)
     
     task = "Explaining complex technical concepts to beginners"
-    test_prompts = [
-        "Explain how neural networks work to someone who has never programmed before",
-        "What is quantum computing and why does it matter?",
-        "How does the internet actually work?"
-    ]
+    
+    # Generate test prompts using AI
+    print("\nGenerating test prompts using AI...")
+    test_prompts = evaluator.generate_test_prompts(
+        task_description=task,
+        num_prompts=5,
+        difficulty_levels=["beginner", "intermediate", "advanced"]
+    )
+    
+    print("\n" + "-"*80)
     
     results = evaluator.batch_evaluate(
         prompts=test_prompts,
